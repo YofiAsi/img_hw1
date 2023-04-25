@@ -10,6 +10,29 @@ GC_PR_BGD = 2 # Soft bg pixel
 GC_PR_FGD = 3 # Soft fg pixel
 n_components = 5
 
+# class Pixel:
+#     def __init__(self, color: np.array, mask: int, com_idx:int = -1) -> None:
+#         self.color = np.copy(color)
+#         self.mask = mask
+#         self.com_idx = com_idx
+
+class Component:
+    def __init__(self, mean) -> None:
+        self.mean = np.copy(mean)
+        self.inv_cov = -1
+        self.det = -1
+        self.weight = -1
+
+class Gmm:
+    def __init__(self, array) -> None:
+        kmeans = KMeans(n_clusters=n_components)
+        kmeans.fit(array)
+
+        self.components = kmeans.cluster_centers_
+        self.inv_cov
+        self.det_cov
+        self.weights
+
 
 # Define the GrabCut algorithm function
 def grabcut(img, rect, n_iter=5):
@@ -17,6 +40,9 @@ def grabcut(img, rect, n_iter=5):
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask.fill(GC_BGD)
     x, y, w, h = rect
+
+    w -= x
+    h -= y
 
     #Initalize the inner square to Foreground
     mask[y:y+h, x:x+w] = GC_PR_FGD # soft fg (3)
@@ -39,31 +65,27 @@ def grabcut(img, rect, n_iter=5):
     # Return the final mask and the GMMs
     return mask, bgGMM, fgGMM
 
-def create_GMM(array):
-    kmeans = KMeans(n_clusters=n_components)
-    kmeans.fit(array)
+def prepare_for_kmeans(img, mask):
+    x,y,z = img.shape
+    img_vector = np.reshape(img, (x*y, z))
 
-    gmm = GaussianMixture(n_components=n_components, covariance_type='full')
-    gmm.means_init = kmeans.cluster_centers_
-    gmm.fit(array)
-    return gmm
+    x,y = mask.shape
+    mask_vector = np.reshape(mask, (x*y))
+
+    bg_pixels = img_vector[mask_vector == GC_BGD & mask_vector == GC_PR_BGD]
+    fg_pixels = img_vector[mask_vector == GC_FGD & mask_vector == GC_PR_FGD]
+    return bg_pixels,fg_pixels
 
 def initalize_GMMs(img, mask):
     # TODO: implement initalize_GMMs
     bgGMM = None
     fgGMM = None
-    bg_array = []
-    fg_array = []
-    img_vector = np.reshape(img, (-1, 3))
-    mask_vector = np.reshape(mask, -1)
-    for i in range(len(img_vector)):
-        if mask_vector[i] == GC_FGD or mask_vector[i] == GC_PR_FGD:
-            fg_array.append(img_vector[i])
-        else:
-            bg_array.append(img_vector[i])
 
-    fgGMM = create_GMM(np.array(fg_array))
-    bgGMM = create_GMM(np.array(bg_array))
+    bg_pixels, fg_pixels = prepare_for_kmeans(img, mask)
+
+    bgGMM = Gmm(bg_pixels)
+    fgGMM = Gmm(fg_pixels)
+
     return bgGMM, fgGMM
 
 
@@ -136,10 +158,10 @@ if __name__ == '__main__':
 
     # Apply the final mask to the input image and display the results
     img_cut = img * (mask[:, :, np.newaxis])
-    """
+    
     cv2.imshow('Original Image', img)
     cv2.imshow('GrabCut Mask', 255 * mask)
     cv2.imshow('GrabCut Result', img_cut)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-    """
+    
