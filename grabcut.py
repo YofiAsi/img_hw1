@@ -94,6 +94,9 @@ class Gmm:
     def calc_det(self):
         self.det = np.linalg.det(self.cov)
 
+    def update(self, img, mask):
+        pass
+
 # Define the GrabCut algorithm function
 def grabcut(img, rect, n_iter=5):
     # Assign initial labels to the pixels based on the bounding box
@@ -149,7 +152,8 @@ def initalize_GMMs(img, mask):
 
 # Define helper functions for the GrabCut algorithm
 def update_GMMs(img, mask, bgGMM, fgGMM):
-    # TODO: implement GMM component assignment step
+    bgGMM.update(img, mask)
+    fgGMM.update(img, mask)
     return bgGMM, fgGMM
 
 
