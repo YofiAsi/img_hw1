@@ -3,12 +3,14 @@ import cv2
 import argparse
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
+from numpy.linalg import LinAlgError
 
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
 GC_PR_BGD = 2 # Soft bg pixel
 GC_PR_FGD = 3 # Soft fg pixel
 n_components = 5
+epsilon = 0.0001
 
 # class Pixel:
 #     def __init__(self, color: np.array, mask: int, com_idx:int = -1) -> None:
@@ -28,15 +30,18 @@ class Gmm:
         kmeans = KMeans(n_clusters=n_components)
         kmeans.fit(array)
 
-        self.components = kmeans.cluster_centers_
+        self.means = kmeans.cluster_centers_
         self.labels = kmeans.labels_
-        self.inv_cov
-        self.det_cov
+        self.cov = None
+        self.inv_cov = None
+        self.det = None
         
-        self.cal_weights()
+        self.calc_weights()
+        self.calc_cov(array)
+        self.calc_inv_cov()
+        self.calc_det()
 
-    def cal_weights(self):
-        n_components = len(self.components)
+    def calc_weights(self):
         n_pixels = len(self.labels)
         weights = np.zeros(shape=(n_components))
         
@@ -51,11 +56,44 @@ class Gmm:
         self.weights = np.copy(weights)
         assert(sum(weights) == 1)
 
-    def cal_cov(self):
-        pass
+    def calc_means(self,array):
+        means = np.zeros(shape=(n_components,3))
+        counts = np.zeros(shape=(n_components))
 
-    def cal_det(self):
-        pass
+        for i, com in enumerate(self.labels):
+            means[com] += array[i]
+            counts[com] += 1
+        
+        for i, count in enumerate(counts):
+            means[i] = means[i]/count
+        
+        self.means = np.copy(means)
+
+    def calc_cov(self, array):
+        self.cov = np.zeros(shape=(n_components, 3, 3))
+
+        for i in range(n_components):
+            pixels = array[self.labels == i]
+            cov = np.cov(pixels, rowvar=False)
+
+            assert(cov.shape == (3,3))
+
+            self.cov.append(np.copy(cov))
+        
+        assert(self.cov.shape == (n_components, 3, 3))
+
+    def calc_inv_cov(self):
+        assert(self.cal_cov is not None)
+        try:
+            self.inv_cov = np.copy(np.linalg.inv(self.cal_cov))
+        except LinAlgError:
+            self.cov[0] += epsilon
+            self.inv_cov = np.copy(np.linalg.inv(self.cal_cov))
+        return
+
+    def calc_det(self):
+        self.det = np.linalg.det(self.cov)
+
 # Define the GrabCut algorithm function
 def grabcut(img, rect, n_iter=5):
     # Assign initial labels to the pixels based on the bounding box
@@ -87,7 +125,7 @@ def grabcut(img, rect, n_iter=5):
     # Return the final mask and the GMMs
     return mask, bgGMM, fgGMM
 
-def prepare_for_kmeans(img, mask):
+def seperate(img, mask):
     x,y,z = img.shape
     img_vector = np.reshape(img, (x*y, z))
 
@@ -99,11 +137,10 @@ def prepare_for_kmeans(img, mask):
     return bg_pixels,fg_pixels
 
 def initalize_GMMs(img, mask):
-    # TODO: implement initalize_GMMs
     bgGMM = None
     fgGMM = None
 
-    bg_pixels, fg_pixels = prepare_for_kmeans(img, mask)
+    bg_pixels, fg_pixels = seperate(img, mask)
 
     bgGMM = Gmm(bg_pixels)
     fgGMM = Gmm(fg_pixels)
