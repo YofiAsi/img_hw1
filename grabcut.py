@@ -16,12 +16,12 @@ n_components = 5
 #         self.mask = mask
 #         self.com_idx = com_idx
 
-class Component:
-    def __init__(self, mean) -> None:
-        self.mean = np.copy(mean)
-        self.inv_cov = -1
-        self.det = -1
-        self.weight = -1
+# class Component:
+#     def __init__(self, mean) -> None:
+#         self.mean = np.copy(mean)
+#         self.inv_cov = -1
+#         self.det = -1
+#         self.weight = -1
 
 class Gmm:
     def __init__(self, array) -> None:
@@ -29,11 +29,33 @@ class Gmm:
         kmeans.fit(array)
 
         self.components = kmeans.cluster_centers_
+        self.labels = kmeans.labels_
         self.inv_cov
         self.det_cov
-        self.weights
+        
+        self.cal_weights()
 
+    def cal_weights(self):
+        n_components = len(self.components)
+        n_pixels = len(self.labels)
+        weights = np.zeros(shape=(n_components))
+        
+        # Count how many pixels in each component
+        for label in self.labels:
+            weights[label] += 1
 
+        # Normalize
+        for i, weight in enumerate(weights):
+            weights[i] = weight/n_pixels
+
+        self.weights = np.copy(weights)
+        assert(sum(weights) == 1)
+
+    def cal_cov(self):
+        pass
+
+    def cal_det(self):
+        pass
 # Define the GrabCut algorithm function
 def grabcut(img, rect, n_iter=5):
     # Assign initial labels to the pixels based on the bounding box
@@ -87,7 +109,6 @@ def initalize_GMMs(img, mask):
     fgGMM = Gmm(fg_pixels)
 
     return bgGMM, fgGMM
-
 
 # Define helper functions for the GrabCut algorithm
 def update_GMMs(img, mask, bgGMM, fgGMM):
