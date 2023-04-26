@@ -4,6 +4,7 @@ import argparse
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from numpy.linalg import LinAlgError
+from scipy.stats import multivariate_normal
 
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
@@ -30,14 +31,24 @@ class Gmm:
         kmeans = KMeans(n_clusters=n_components)
         kmeans.fit(array)
 
-        self.means = kmeans.cluster_centers_
+        self.pixels = array
         self.labels = kmeans.labels_
+
+        self.means = kmeans.cluster_centers_
         self.cov = None
         self.inv_cov = None
         self.det = None
-        
+        self.weights = None
+
         self.calc_weights()
-        self.calc_cov(array)
+        self.calc_cov()
+        self.calc_inv_cov()
+        self.calc_det()
+
+    def quick_update(self):
+        self.calc_means()
+        self.calc_weights()
+        self.calc_cov()
         self.calc_inv_cov()
         self.calc_det()
 
@@ -54,45 +65,50 @@ class Gmm:
             weights[i] = weight/n_pixels
 
         self.weights = np.copy(weights)
-        assert(sum(weights) == 1)
+        assert(1.0 - epsilon <= sum(weights) <= 1.0)
 
-    def calc_means(self,array):
+    def calc_means(self):
         means = np.zeros(shape=(n_components,3))
         counts = np.zeros(shape=(n_components))
 
         for i, com in enumerate(self.labels):
-            means[com] += array[i]
+            means[com] += self.pixels[i]
             counts[com] += 1
         
         for i, count in enumerate(counts):
-            means[i] = means[i]/count
-        
+            if count > 0:
+                means[i] = means[i]/count
+            else:
+                means[i] = 0
+
         self.means = np.copy(means)
 
-    def calc_cov(self, array):
+    def calc_cov(self):
         self.cov = np.zeros(shape=(n_components, 3, 3))
 
         for i in range(n_components):
-            pixels = array[self.labels == i]
+            pixels = self.pixels[self.labels == i]
             cov = np.cov(pixels, rowvar=False)
 
             assert(cov.shape == (3,3))
-
-            self.cov.append(np.copy(cov))
+            np.append(self.cov, np.copy(cov))
         
         assert(self.cov.shape == (n_components, 3, 3))
 
     def calc_inv_cov(self):
-        assert(self.cal_cov is not None)
+        assert(self.cov is not None)
         try:
-            self.inv_cov = np.copy(np.linalg.inv(self.cal_cov))
+            self.inv_cov = np.copy(np.linalg.inv(self.cov))
         except LinAlgError:
-            self.cov[0] += epsilon
-            self.inv_cov = np.copy(np.linalg.inv(self.cal_cov))
+            self.cov += epsilon * np.eye(self.cov.shape[1])
+            self.inv_cov = np.copy(np.linalg.inv(self.cov))
         return
 
     def calc_det(self):
         self.det = np.linalg.det(self.cov)
+
+    def calc_prob(self, x, k):
+        return multivariate_normal.pdf(x, self.means[k], self.cov[k])
 
 # Define the GrabCut algorithm function
 def grabcut(img, rect, n_iter=5):
@@ -125,16 +141,19 @@ def grabcut(img, rect, n_iter=5):
     # Return the final mask and the GMMs
     return mask, bgGMM, fgGMM
 
-def seperate(img, mask):
+def reshape(img, mask):
     x,y,z = img.shape
     img_vector = np.reshape(img, (x*y, z))
 
     x,y = mask.shape
     mask_vector = np.reshape(mask, (x*y))
+    return img_vector, mask_vector
 
-    bg_pixels = img_vector[mask_vector == GC_BGD & mask_vector == GC_PR_BGD]
-    fg_pixels = img_vector[mask_vector == GC_FGD & mask_vector == GC_PR_FGD]
-    return bg_pixels,fg_pixels
+def seperate(img, mask):
+    img_vector, mask_vector = reshape(img, mask)
+    bg_pixels = img_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
+    fg_pixels = img_vector[(mask_vector == GC_FGD) | (mask_vector == GC_PR_FGD)]
+    return bg_pixels, fg_pixels
 
 def initalize_GMMs(img, mask):
     bgGMM = None
@@ -150,8 +169,29 @@ def initalize_GMMs(img, mask):
 # Define helper functions for the GrabCut algorithm
 def update_GMMs(img, mask, bgGMM, fgGMM):
     # TODO: implement GMM component assignment step
-    return bgGMM, fgGMM
 
+    bg_pixels, fg_pixels = seperate(img, mask)
+
+    for i, pixel in enumerate(bg_pixels):
+        argmax_k, max_k = -1, 0
+        for k in range(n_components):
+            if bgGMM.calc_prob(pixel, k) > max_k:
+                max_k = bgGMM.calc_prob(pixel, k)
+                argmax_k = k
+        bgGMM.labels[i] = argmax_k
+
+    for i, pixel in enumerate(fg_pixels):
+        argmax_k, max_k = -1, 0
+        for k in range(n_components):
+            if fgGMM.calc_prob(pixel, k) > max_k:
+                max_k = fgGMM.calc_prob(pixel, k)
+                argmax_k = k
+        fgGMM.labels[i] = argmax_k
+
+    bgGMM.quick_update()
+    fgGMM.quick_update()
+
+    return bgGMM, fgGMM
 
 def calculate_mincut(img, mask, bgGMM, fgGMM):
     # TODO: implement energy (cost) calculation step and mincut
@@ -188,7 +228,6 @@ def parse():
 if __name__ == '__main__':
     # Load an example image and define a bounding box around the object of interest
     args = parse()
-
 
     if args.input_img_path == '':
         input_path = f'data/imgs/{args.input_name}.jpg'
