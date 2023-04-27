@@ -127,12 +127,11 @@ def seperate(img, mask):
     return bg_pixels, fg_pixels
 
 def init_graph(img, mask, bgGMM, fgGMM):
-
     width, height = img.shape
     G = ig.Graph()
     for x in range(width):
         for y in range(height):
-            r, g, b = img.getpixel((x, y))
+            r, g, b = img[x,y]
             G.add_vertex((x, y), color=(r, g, b))
 
     for x in range(width):
@@ -149,6 +148,7 @@ def init_graph(img, mask, bgGMM, fgGMM):
     print("Vertices:", G.vs)
     print("Edges:", G.es)
     print("Edge weights:", G.es["weight"])
+
 def add_N_link(G, x, y):
     color_x = G.vs.find(x).attributes()['color']
     color_y = G.vs.find(y).attributes()['color']
@@ -199,12 +199,6 @@ def cal_metric(predicted_mask, gt_mask):
     # TODO: implement metric calculation
 
     return 100, 100
-
-def cal_Nlink(m,n):
-    # dist = np.dot(m-n)
-    # expect = 
-    # beta = pow(2)
-    pass
 
 #-------------------------------------------------main-------------------------------------------------#
 
