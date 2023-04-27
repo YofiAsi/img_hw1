@@ -5,6 +5,7 @@ from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from numpy.linalg import LinAlgError
 from scipy.stats import multivariate_normal
+import igraph as ig
 
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
@@ -125,6 +126,37 @@ def seperate(img, mask):
     fg_pixels = img_vector[(mask_vector == GC_FGD) | (mask_vector == GC_PR_FGD)]
     return bg_pixels, fg_pixels
 
+def init_graph(img, mask, bgGMM, fgGMM):
+
+    width, height = img.shape
+    G = ig.Graph()
+    for x in range(width):
+        for y in range(height):
+            r, g, b = img.getpixel((x, y))
+            G.add_vertex((x, y), color=(r, g, b))
+
+    for x in range(width):
+        for y in range(height):
+            if x < width - 1:
+                add_N_link(G, (x, y), (x + 1, y))
+            if y < height - 1:
+                add_N_link(G, (x, y), (x, y + 1))
+            if x < width - 1 and y < height - 1:
+                add_N_link(G, (x, y), (x + 1, y + 1))
+            if x < width - 1 and y > 0:
+                add_N_link(G, (x, y), (x + 1, y - 1))
+
+    print("Vertices:", G.vs)
+    print("Edges:", G.es)
+    print("Edge weights:", G.es["weight"])
+def add_N_link(G, x, y):
+    color_x = G.vs.find(x).attributes()['color']
+    color_y = G.vs.find(y).attributes()['color']
+    beta = (1 / (2 * pow((color_x - color_y), 2)))
+    dist = np.linalg.norm(x-y)
+    weight = (50 / dist) * np.exp(-beta*pow(dist,2))
+    G.add_edge(x, y, weight=weight)
+
 def initalize_GMMs(img, mask):
     bgGMM = None
     fgGMM = None
@@ -151,6 +183,7 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     # TODO: implement energy (cost) calculation step and mincut
     min_cut = [[], []]
     energy = 0
+    init_graph(img, mask, bgGMM, fgGMM)
     return min_cut, energy
 
 def update_mask(mincut_sets, mask):
@@ -169,8 +202,9 @@ def cal_metric(predicted_mask, gt_mask):
 
 def cal_Nlink(m,n):
     # dist = np.dot(m-n)
-    expect = 
+    # expect = 
     # beta = pow(2)
+    pass
 
 #-------------------------------------------------main-------------------------------------------------#
 
