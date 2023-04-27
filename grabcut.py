@@ -13,19 +13,6 @@ GC_PR_FGD = 3 # Soft fg pixel
 n_components = 5
 epsilon = 0.0001
 
-# class Pixel:
-#     def __init__(self, color: np.array, mask: int, com_idx:int = -1) -> None:
-#         self.color = np.copy(color)
-#         self.mask = mask
-#         self.com_idx = com_idx
-
-# class Component:
-#     def __init__(self, mean) -> None:
-#         self.mean = np.copy(mean)
-#         self.inv_cov = -1
-#         self.det = -1
-#         self.weight = -1
-
 class Gmm:
     def __init__(self, array) -> None:
         kmeans = KMeans(n_clusters=n_components)
@@ -45,7 +32,7 @@ class Gmm:
         self.calc_inv_cov()
         self.calc_det()
 
-    def quick_update(self):
+    def update(self):
         self.calc_means()
         self.calc_weights()
         self.calc_cov()
@@ -110,10 +97,83 @@ class Gmm:
     def calc_prob(self, x, k):
         return multivariate_normal.pdf(x, self.means[k], self.cov[k])
 
-    def update(self, img, mask):
-        pass
+    def allocate_pixels(self, pixels):
+        # Label each pixel to his most liklyhood component
+        self.labels = np.zeros(shape=(len(pixels)))
+        for i, pixel in enumerate(pixels):
+            argmax_k, max_k = -1, 0
+            for k in range(n_components):
+                prob = self.calc_prob(pixel, k)
+                if prob > max_k:
+                    max_k = prob
+                    argmax_k = k
+            self.labels[i] = argmax_k
 
-# Define the GrabCut algorithm function
+#------------------------------------------------tools-------------------------------------------------#
+
+def reshape(img, mask):
+    x,y,z = img.shape
+    img_vector = np.reshape(img, (x*y, z))
+
+    x,y = mask.shape
+    mask_vector = np.reshape(mask, (x*y))
+    return img_vector, mask_vector
+
+def seperate(img, mask):
+    img_vector, mask_vector = reshape(img, mask)
+    bg_pixels = img_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
+    fg_pixels = img_vector[(mask_vector == GC_FGD) | (mask_vector == GC_PR_FGD)]
+    return bg_pixels, fg_pixels
+
+def initalize_GMMs(img, mask):
+    bgGMM = None
+    fgGMM = None
+
+    bg_pixels, fg_pixels = seperate(img, mask)
+
+    bgGMM = Gmm(bg_pixels)
+    fgGMM = Gmm(fg_pixels)
+
+    return bgGMM, fgGMM
+
+def update_GMMs(img, mask, bgGMM: Gmm, fgGMM: Gmm):
+    bg_pixels, fg_pixels = seperate(img, mask)
+
+    bgGMM.allocate_pixels(bg_pixels)
+    fgGMM.allocate_pixels(fg_pixels)
+
+    bgGMM.update()
+    fgGMM.update()
+
+    return bgGMM, fgGMM
+
+def calculate_mincut(img, mask, bgGMM, fgGMM):
+    # TODO: implement energy (cost) calculation step and mincut
+    min_cut = [[], []]
+    energy = 0
+    return min_cut, energy
+
+def update_mask(mincut_sets, mask):
+    # TODO: implement mask update step
+    return mask
+
+def check_convergence(energy):
+    # TODO: implement convergence check
+    convergence = False
+    return convergence
+
+def cal_metric(predicted_mask, gt_mask):
+    # TODO: implement metric calculation
+
+    return 100, 100
+
+def cal_Nlink(m,n):
+    # dist = np.dot(m-n)
+    expect = 
+    # beta = pow(2)
+
+#-------------------------------------------------main-------------------------------------------------#
+
 def grabcut(img, rect, n_iter=5):
     # Assign initial labels to the pixels based on the bounding box
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
@@ -143,81 +203,6 @@ def grabcut(img, rect, n_iter=5):
 
     # Return the final mask and the GMMs
     return mask, bgGMM, fgGMM
-
-def reshape(img, mask):
-    x,y,z = img.shape
-    img_vector = np.reshape(img, (x*y, z))
-
-    x,y = mask.shape
-    mask_vector = np.reshape(mask, (x*y))
-    return img_vector, mask_vector
-
-def seperate(img, mask):
-    img_vector, mask_vector = reshape(img, mask)
-    bg_pixels = img_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
-    fg_pixels = img_vector[(mask_vector == GC_FGD) | (mask_vector == GC_PR_FGD)]
-    return bg_pixels, fg_pixels
-
-def initalize_GMMs(img, mask):
-    bgGMM = None
-    fgGMM = None
-
-    bg_pixels, fg_pixels = seperate(img, mask)
-
-    bgGMM = Gmm(bg_pixels)
-    fgGMM = Gmm(fg_pixels)
-
-    return bgGMM, fgGMM
-
-# Define helper functions for the GrabCut algorithm
-def update_GMMs(img, mask, bgGMM, fgGMM):
-    # TODO: implement GMM component assignment step
-
-    bg_pixels, fg_pixels = seperate(img, mask)
-
-    for i, pixel in enumerate(bg_pixels):
-        argmax_k, max_k = -1, 0
-        for k in range(n_components):
-            if bgGMM.calc_prob(pixel, k) > max_k:
-                max_k = bgGMM.calc_prob(pixel, k)
-                argmax_k = k
-        bgGMM.labels[i] = argmax_k
-
-    for i, pixel in enumerate(fg_pixels):
-        argmax_k, max_k = -1, 0
-        for k in range(n_components):
-            if fgGMM.calc_prob(pixel, k) > max_k:
-                max_k = fgGMM.calc_prob(pixel, k)
-                argmax_k = k
-        fgGMM.labels[i] = argmax_k
-
-    bgGMM.quick_update()
-    fgGMM.quick_update()
-
-    return bgGMM, fgGMM
-
-def calculate_mincut(img, mask, bgGMM, fgGMM):
-    # TODO: implement energy (cost) calculation step and mincut
-    min_cut = [[], []]
-    energy = 0
-    return min_cut, energy
-
-
-def update_mask(mincut_sets, mask):
-    # TODO: implement mask update step
-    return mask
-
-
-def check_convergence(energy):
-    # TODO: implement convergence check
-    convergence = False
-    return convergence
-
-
-def cal_metric(predicted_mask, gt_mask):
-    # TODO: implement metric calculation
-
-    return 100, 100
 
 def parse():
     parser = argparse.ArgumentParser()
@@ -264,4 +249,3 @@ if __name__ == '__main__':
     cv2.imshow('GrabCut Result', img_cut)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-    
