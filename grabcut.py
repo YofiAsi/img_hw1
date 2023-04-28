@@ -116,6 +116,10 @@ class Graph:
     def __init__(self) -> None:
         self.graph = None
         self.img = None
+        self.mask = None
+        self.n = 0
+        self.bg_id = 0
+        self.fg_id = 0
         self.edges = []
         self.weights = []
     
@@ -123,7 +127,9 @@ class Graph:
         x,y = self.img.shape[:2]
         
         # +2 for bg and fg verticies
-        n = x*y + 2
+        self.n = x*y + 2
+        self.bg_id = self.n - 1
+        self.fg_id = self.n - 2
 
         self.graph = ig.Graph(n, self.edges)
         self.graph.es['weight'] = self.weights
@@ -132,6 +138,9 @@ class Graph:
     def add_img(self, img):
         self.img = np.copy(img)
 
+    def add_mask(self, mask):
+        self.mask = np.copy(mask)
+    
     def add_N_edge(self, x, y):
         weight = self.calc_N_weight(x,y)
 
@@ -141,6 +150,11 @@ class Graph:
     # TODO: this
     def calc_N_weight(self, x, y):
         beta = 0
+
+    def init_T_edges(self):
+        bg_links = [[self.bg_id, i] for i in range(self.n - 2)]
+        fg_links = [[self.fg_id, i] for i in range(self.n - 2)]
+    
 
 G = Graph()
 
