@@ -127,7 +127,7 @@ class Graph:
         self.fg_id = 0
         self.edges = []
         self.weights = []
-    
+
     def set_graph(self):
         x,y = self.img.shape[:2]
         
@@ -195,10 +195,7 @@ def seperate(img, mask):
     fg_pixels_pos = pos_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
     return bg_pixels, fg_pixels, bg_pixels_pos, fg_pixels_pos
 
-
-
-
-def init_graph(img, mask=None, bgGMM=None, fgGMM=None) -> Graph:
+def init_graph(img) -> Graph:
     n_rows, n_cull = img.shape[:2]
     G.add_img(img)
     G.init_N_edges(n_rows, n_cull)
@@ -221,6 +218,8 @@ def initalize_GMMs(img, mask):
     bgGMM = Gmm(bg_pixels, bg_pixels_pos)
     fgGMM = Gmm(fg_pixels, fg_pixels_pos)
 
+    init_graph(img)
+
     return bgGMM, fgGMM
 
 def update_GMMs(img, mask, bgGMM: Gmm, fgGMM: Gmm):
@@ -235,7 +234,7 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     # TODO: implement energy (cost) calculation step and mincut
     min_cut = [[], []]
     energy = 0
-    init_graph(img, mask, bgGMM, fgGMM)
+
     return min_cut, energy
 
 def update_mask(mincut_sets, mask):
