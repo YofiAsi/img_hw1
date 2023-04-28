@@ -1,6 +1,8 @@
 import numpy as np
 import cv2
 import argparse
+from itertools import product
+from tqdm import tqdm
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from numpy.linalg import LinAlgError
@@ -110,6 +112,38 @@ class Gmm:
                     argmax_k = k
             self.labels[i] = argmax_k
 
+class Graph:
+    def __init__(self) -> None:
+        self.graph = None
+        self.img = None
+        self.edges = []
+        self.weights = []
+    
+    def set_graph(self):
+        x,y = self.img.shape[:2]
+        
+        # +2 for bg and fg verticies
+        n = x*y + 2
+
+        self.graph = ig.Graph(n, self.edges)
+        self.graph.es['weight'] = self.weights
+        self.graph.vs['color'] = self.img
+    
+    def add_img(self, img):
+        self.img = np.copy(img)
+
+    def add_N_edge(self, x, y):
+        weight = self.calc_N_weight(x,y)
+
+        self.edges.append([x,y])
+        self.weights.append(weight)
+
+    # TODO: this
+    def calc_N_weight(self, x, y):
+        beta = 0
+
+G = Graph()
+
 #------------------------------------------------tools-------------------------------------------------#
 
 def reshape(img, mask):
@@ -126,36 +160,30 @@ def seperate(img, mask):
     fg_pixels = img_vector[(mask_vector == GC_FGD) | (mask_vector == GC_PR_FGD)]
     return bg_pixels, fg_pixels
 
-def init_graph(img, mask, bgGMM, fgGMM):
-    width, height = img.shape
-    G = ig.Graph()
-    for x in range(width):
-        for y in range(height):
-            r, g, b = img[x,y]
-            G.add_vertex((x, y), color=(r, g, b))
+def init_graph(img, mask=None, bgGMM=None, fgGMM=None) -> Graph:
+    n_rows, n_cull = img.shape[:2]
+    
+    G.add_img(img)
+    
+    for idx in range(n_cull*n_rows):
+        if idx%n_rows < n_cull - 1:
+            G.add_N_edge(idx, idx+1)
+        if idx//n_rows < n_rows - 1:
+            G.add_N_edge(idx, idx+n_cull)
+        if idx%n_rows < n_cull - 1 and idx//n_rows < n_rows - 1:
+            G.add_N_edge(idx, idx+n_cull+1)
+        if idx%n_rows < n_cull - 1 and 0 < idx//n_rows:
+            G.add_N_edge(idx, idx+n_cull-1)
 
-    for x in range(width):
-        for y in range(height):
-            if x < width - 1:
-                add_N_link(G, (x, y), (x + 1, y))
-            if y < height - 1:
-                add_N_link(G, (x, y), (x, y + 1))
-            if x < width - 1 and y < height - 1:
-                add_N_link(G, (x, y), (x + 1, y + 1))
-            if x < width - 1 and y > 0:
-                add_N_link(G, (x, y), (x + 1, y - 1))
+    G.set_graph()
+    return G
 
-    print("Vertices:", G.vs)
-    print("Edges:", G.es)
-    print("Edge weights:", G.es["weight"])
+def index(pixel: tuple, width: int) -> int:
+    return pixel[0]*width + pixel[1]
 
-def add_N_link(G, x, y):
-    color_x = G.vs.find(x).attributes()['color']
-    color_y = G.vs.find(y).attributes()['color']
-    beta = (1 / (2 * pow((color_x - color_y), 2)))
-    dist = np.linalg.norm(x-y)
-    weight = (50 / dist) * np.exp(-beta*pow(dist,2))
-    G.add_edge(x, y, weight=weight)
+    #### weight = 0
+    G.add_edge(pixel_1, pixel_2)
+    # G.add_edge(idx_1, idx_2, weight=0)
 
 def initalize_GMMs(img, mask):
     bgGMM = None
@@ -242,6 +270,26 @@ def parse():
     return parser.parse_args()
 
 if __name__ == '__main__':
+    args = parse()
+
+    if args.input_img_path == '':
+        input_path = f'data/imgs/{args.input_name}.jpg'
+    else:
+        input_path = args.input_img_path
+
+    if args.use_file_rect:
+        rect = tuple(map(int, open(f"data/bboxes/{args.input_name}.txt", "r").read().split(' ')))
+    else:
+        rect = tuple(map(int,args.rect.split(',')))
+
+
+    img = cv2.imread(input_path)
+
+    init_graph(img)
+
+
+# if __name__ == '__main__':
+def main():
     # Load an example image and define a bounding box around the object of interest
     args = parse()
 
