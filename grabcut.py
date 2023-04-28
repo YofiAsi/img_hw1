@@ -220,6 +220,57 @@ class Graph:
     def index(self,x, y) -> int:
         return x*self.culls + y
     
+    
+    
+
+    # TODO: this
+    def calc_N_weight(self, x, y):
+        beta = 0
+
+    def init_N_edges(self, n_rows: int, n_cull: int):
+        for idx in range(n_cull * n_rows):
+            if idx % n_rows < n_cull - 1:
+                self.add_N_edge(idx, idx + 1)
+            if idx // n_rows < n_rows - 1:
+                self.add_N_edge(idx, idx + n_cull)
+            if idx % n_rows < n_cull - 1 and idx // n_rows < n_rows - 1:
+                self.add_N_edge(idx, idx + n_cull + 1)
+            if idx % n_rows < n_cull - 1 and 0 < idx // n_rows:
+                self.add_N_edge(idx, idx + n_cull - 1)
+    
+    def calc_T_weight(self, idx, gmm_dis: Gmm):
+        sum = 0
+        for i in range(gmm_dis.weights.size):
+            weight = gmm_dis.weights[i]
+            color = self.vs['color'][idx]
+            det = gmm_dis.det[i]
+            mean = gmm_dis.means[i]
+            inv_cov = gmm_dis.inv_cov[i]
+            sum += weight * (1 / np.sqrt(det)) * \
+                   np.exp(0.5 * (color - mean) * inv_cov * (color - mean))
+        return -np.log(sum)
+
+    def add_T_edge(self, x, y, gmm_dis: Gmm, is_bg: bool):
+        if is_bg:
+            weight = 500 # asaf self.max_N_edge
+        else:
+            weight = self.calc_T_weight(x, gmm_dis)
+        self.edges.append([x, y])
+        self.weights.append(weight)
+
+    def init_T_edges(self, bgGMM: Gmm, fgGMM: Gmm):
+        # For TrimapBackground
+        for pos in bgGMM.pos:
+            self.add_T_edge(pos, self.bg_id, bgGMM, True)
+
+        # For TrimapUnknown Dfore and Dback
+        for pos in fgGMM.pos:
+            self.add_T_edge(pos, self.bg_id, fgGMM, False)
+            self.add_T_edge(pos, self.fg_id, bgGMM, False)
+
+
+    
+
 G = Graph()
 
 #------------------------------------------------tools-------------------------------------------------#
@@ -275,7 +326,8 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     # TODO: implement energy (cost) calculation step and mincut
     min_cut = [[], []]
     energy = 0
-
+    G.init_T_edges(bgGMM, fgGMM)
+    G.set_graph()
     return min_cut, energy
 
 def update_mask(mincut_sets, mask):
