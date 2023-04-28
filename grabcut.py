@@ -17,11 +17,12 @@ n_components = 5
 epsilon = 0.0001
 
 class Gmm:
-    def __init__(self, array) -> None:
+    def __init__(self, array, pos) -> None:
         kmeans = KMeans(n_clusters=n_components)
         kmeans.fit(array)
 
         self.pixels = array
+        self.pos = pos
         self.labels = kmeans.labels_
 
         self.means = kmeans.cluster_centers_
@@ -35,7 +36,11 @@ class Gmm:
         self.calc_inv_cov()
         self.calc_det()
 
-    def update(self):
+    def update(self, array, pos):
+        self.pixels = array
+        self.pos = pos
+        self.allocate_pixels(self.pixels)
+
         self.calc_means()
         self.calc_weights()
         self.calc_cov()
@@ -131,7 +136,7 @@ class Graph:
         self.bg_id = self.n - 1
         self.fg_id = self.n - 2
 
-        self.graph = ig.Graph(n, self.edges)
+        self.graph = ig.Graph(self.n, self.edges)
         self.graph.es['weight'] = self.weights
         self.graph.vs['color'] = self.img
     
@@ -151,9 +156,20 @@ class Graph:
     def calc_N_weight(self, x, y):
         beta = 0
 
-    def init_T_edges(self):
-        bg_links = [[self.bg_id, i] for i in range(self.n - 2)]
-        fg_links = [[self.fg_id, i] for i in range(self.n - 2)]
+    def init_N_edges(self, n_rows: int, n_cull: int):
+        for idx in range(n_cull * n_rows):
+            if idx % n_rows < n_cull - 1:
+                self.add_N_edge(idx, idx + 1)
+            if idx // n_rows < n_rows - 1:
+                self.add_N_edge(idx, idx + n_cull)
+            if idx % n_rows < n_cull - 1 and idx // n_rows < n_rows - 1:
+                self.add_N_edge(idx, idx + n_cull + 1)
+            if idx % n_rows < n_cull - 1 and 0 < idx // n_rows:
+                self.add_N_edge(idx, idx + n_cull - 1)
+
+    def init_T_edges(self, bgGMM=None, fgGMM=None):
+        bg_links = [[self.bg_id, pos] for pos in bgGMM.pos]
+        fg_links = [[self.fg_id, pos] for pos in fgGMM.pos]
     
 
 G = Graph()
@@ -170,25 +186,22 @@ def reshape(img, mask):
 
 def seperate(img, mask):
     img_vector, mask_vector = reshape(img, mask)
+    pos_vector = np.arange(img_vector.size)
+
     bg_pixels = img_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
+    bg_pixels_pos = pos_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
+
     fg_pixels = img_vector[(mask_vector == GC_FGD) | (mask_vector == GC_PR_FGD)]
-    return bg_pixels, fg_pixels
+    fg_pixels_pos = pos_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
+    return bg_pixels, fg_pixels, bg_pixels_pos, fg_pixels_pos
+
+
+
 
 def init_graph(img, mask=None, bgGMM=None, fgGMM=None) -> Graph:
     n_rows, n_cull = img.shape[:2]
-    
     G.add_img(img)
-    
-    for idx in range(n_cull*n_rows):
-        if idx%n_rows < n_cull - 1:
-            G.add_N_edge(idx, idx+1)
-        if idx//n_rows < n_rows - 1:
-            G.add_N_edge(idx, idx+n_cull)
-        if idx%n_rows < n_cull - 1 and idx//n_rows < n_rows - 1:
-            G.add_N_edge(idx, idx+n_cull+1)
-        if idx%n_rows < n_cull - 1 and 0 < idx//n_rows:
-            G.add_N_edge(idx, idx+n_cull-1)
-
+    G.init_N_edges(n_rows, n_cull)
     G.set_graph()
     return G
 
@@ -203,21 +216,18 @@ def initalize_GMMs(img, mask):
     bgGMM = None
     fgGMM = None
 
-    bg_pixels, fg_pixels = seperate(img, mask)
+    bg_pixels, fg_pixels, bg_pixels_pos, fg_pixels_pos = seperate(img, mask)
 
-    bgGMM = Gmm(bg_pixels)
-    fgGMM = Gmm(fg_pixels)
+    bgGMM = Gmm(bg_pixels, bg_pixels_pos)
+    fgGMM = Gmm(fg_pixels, fg_pixels_pos)
 
     return bgGMM, fgGMM
 
 def update_GMMs(img, mask, bgGMM: Gmm, fgGMM: Gmm):
-    bg_pixels, fg_pixels = seperate(img, mask)
+    bg_pixels, fg_pixels, bg_pixels_pos, fg_pixels_pos = seperate(img, mask)
 
-    bgGMM.allocate_pixels(bg_pixels)
-    fgGMM.allocate_pixels(fg_pixels)
-
-    bgGMM.update()
-    fgGMM.update()
+    bgGMM.update(bg_pixels, bg_pixels_pos)
+    fgGMM.update(fg_pixels, fg_pixels_pos)
 
     return bgGMM, fgGMM
 
