@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.linalg import norm
 import cv2
 import argparse
 from itertools import product
@@ -125,53 +126,100 @@ class Graph:
         self.n = 0
         self.bg_id = 0
         self.fg_id = 0
+        self.rows = 0
+        self.culls = 0
+        self.beta = 0
+        self.v = {}
         self.edges = []
         self.weights = []
+        self.max_N_edge = 0
 
     def set_graph(self):
         x,y = self.img.shape[:2]
         
+        self.rows = x
+        self.culls = y
+
         # +2 for bg and fg verticies
         self.n = x*y + 2
         self.bg_id = self.n - 1
         self.fg_id = self.n - 2
 
+        self.calc_beta()
+        self.init_N_edges()
+
         self.graph = ig.Graph(self.n, self.edges)
         self.graph.es['weight'] = self.weights
-        self.graph.vs['color'] = self.img
-    
+        self.graph.vs['color'] = np.reshape(self.img, (self.n-2, 3))
+
     def add_img(self, img):
         self.img = np.copy(img)
 
     def add_mask(self, mask):
         self.mask = np.copy(mask)
+
+    def calc_beta(self):
+        w = self.culls
+        h = self.rows
+
+        # this 'catches' all the neighbors distances in img
+        left_diff = self.img[:, 1:] - self.img[:, :-1]
+        upleft_diff = self.img[1:, 1:] - self.img[:-1, :-1]
+        up_diff = self.img[1:, :] - self.img[:-1, :]
+        upright_diff = self.img[1:, :-1] - self.img[:-1, 1:]
+
+        excep = np.sum(np.square(left_diff)) + np.sum(np.square(upleft_diff)) + np.sum(np.square(up_diff)) + np.sum(np.square(upright_diff))
+        
+        # this is the amount of edges
+        beta = 2 * excep / (4*w*h - 3*w - 3*h + 2)
+        beta = 1 / beta
+
+        self.beta = beta
     
-    def add_N_edge(self, x, y):
-        weight = self.calc_N_weight(x,y)
+    def add_neighbors_edges(self, x, y):
+        n_rows = self.rows
+        n_culls = self.culls
+        
+        idx = self.index(x, y)
 
-        self.edges.append([x,y])
-        self.weights.append(weight)
+        if y < n_culls - 1:
+            neighbor = self.index(x, y+1)
+            self.edges.append([idx, neighbor])
+            self.weights.append(self.calc_N_weight((x,y), (x,y+1)))
 
-    # TODO: this
-    def calc_N_weight(self, x, y):
-        beta = 0
+        if y < n_culls - 1 and x < n_rows - 1:
+            neighbor = self.index(x+1, y+1)
+            self.edges.append([idx, neighbor])
+            diag = 1/np.sqrt(2)
+            self.weights.append(self.calc_N_weight((x,y), (x+1,y+1)) * diag)
 
-    def init_N_edges(self, n_rows: int, n_cull: int):
-        for idx in range(n_cull * n_rows):
-            if idx % n_rows < n_cull - 1:
-                self.add_N_edge(idx, idx + 1)
-            if idx // n_rows < n_rows - 1:
-                self.add_N_edge(idx, idx + n_cull)
-            if idx % n_rows < n_cull - 1 and idx // n_rows < n_rows - 1:
-                self.add_N_edge(idx, idx + n_cull + 1)
-            if idx % n_rows < n_cull - 1 and 0 < idx // n_rows:
-                self.add_N_edge(idx, idx + n_cull - 1)
+        if x > 0:
+            neighbor = self.index(x-1, y)
+            self.edges.append([idx, neighbor])
+            self.weights.append(self.calc_N_weight((x,y), (x-1,y)))
 
+        if y > 0 and x > 0:
+            neighbor = self.index(x-1, y-1)
+            self.edges.append([idx, neighbor])
+            diag = 1/np.sqrt(2)
+            self.weights.append(self.calc_N_weight((x,y), (x-1,y-1)) * diag)
+
+    def calc_N_weight(self, pixel_1, pixel_2):
+        dist = np.sum(np.square(self.img[pixel_1] - self.img[pixel_2]))
+        weight = 50 * np.exp(-self.beta*dist)
+        return weight
+
+    def init_N_edges(self):
+        for x,y in product(range(self.rows), range(self.culls)):
+            self.add_neighbors_edges(x,y)
+          
     def init_T_edges(self, bgGMM=None, fgGMM=None):
         bg_links = [[self.bg_id, pos] for pos in bgGMM.pos]
         fg_links = [[self.fg_id, pos] for pos in fgGMM.pos]
-    
 
+    def index(self,x, y) -> int:
+        return x*self.culls + y
+    
 G = Graph()
 
 #------------------------------------------------tools-------------------------------------------------#
@@ -201,13 +249,6 @@ def init_graph(img) -> Graph:
     G.init_N_edges(n_rows, n_cull)
     G.set_graph()
     return G
-
-def index(pixel: tuple, width: int) -> int:
-    return pixel[0]*width + pixel[1]
-
-    #### weight = 0
-    G.add_edge(pixel_1, pixel_2)
-    # G.add_edge(idx_1, idx_2, weight=0)
 
 def initalize_GMMs(img, mask):
     bgGMM = None
