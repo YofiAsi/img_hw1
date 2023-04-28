@@ -166,10 +166,37 @@ class Graph:
                 self.add_N_edge(idx, idx + n_cull + 1)
             if idx % n_rows < n_cull - 1 and 0 < idx // n_rows:
                 self.add_N_edge(idx, idx + n_cull - 1)
+    def calc_T_weight(self, idx, gmm_dis: Gmm):
+        sum = 0
+        for i in range(gmm_dis.weights.size):
+            weight = gmm_dis.weights[i]
+            color = self.vs['color'][idx]
+            det = gmm_dis.det[i]
+            mean = gmm_dis.means[i]
+            inv_cov = gmm_dis.inv_cov[i]
+            sum += weight * (1 / np.sqrt(det)) * \
+                   np.exp(0.5 * (color - mean) * inv_cov * (color - mean))
+        return -np.log(sum)
 
-    def init_T_edges(self, bgGMM=None, fgGMM=None):
-        bg_links = [[self.bg_id, pos] for pos in bgGMM.pos]
-        fg_links = [[self.fg_id, pos] for pos in fgGMM.pos]
+    def add_T_edge(self, x, y, gmm_dis: Gmm, is_bg: bool):
+        if is_bg:
+            weight = 500 # asaf self.max_N_edge
+        else:
+            weight = self.calc_T_weight(x, gmm_dis)
+        self.edges.append([x, y])
+        self.weights.append(weight)
+
+    def init_T_edges(self, bgGMM: Gmm, fgGMM: Gmm):
+        # For TrimapBackground
+        for pos in bgGMM.pos:
+            self.add_T_edge(pos, self.bg_id, bgGMM, True)
+
+        # For TrimapUnknown Dfore and Dback
+        for pos in fgGMM.pos:
+            self.add_T_edge(pos, self.bg_id, fgGMM, False)
+            self.add_T_edge(pos, self.fg_id, bgGMM, False)
+
+
     
 
 G = Graph()
@@ -234,7 +261,8 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     # TODO: implement energy (cost) calculation step and mincut
     min_cut = [[], []]
     energy = 0
-
+    G.init_T_edges(bgGMM, fgGMM)
+    G.set_graph()
     return min_cut, energy
 
 def update_mask(mincut_sets, mask):
