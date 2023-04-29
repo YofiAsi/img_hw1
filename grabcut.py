@@ -18,12 +18,11 @@ n_components = 5
 epsilon = 0.0001
 
 class Gmm:
-    def __init__(self, array, pos) -> None:
+    def __init__(self, array) -> None:
         kmeans = KMeans(n_clusters=n_components)
         kmeans.fit(array)
 
         self.pixels = array
-        self.pos = pos
         self.labels = kmeans.labels_
 
         self.means = kmeans.cluster_centers_
@@ -37,11 +36,9 @@ class Gmm:
         self.calc_inv_cov()
         self.calc_det()
 
-    def update(self, array, pos):
+    def update(self, array):
         self.pixels = array
-        self.pos = pos
-        self.allocate_pixels(self.pixels)
-
+        self.allocate_pixels()
         self.calc_means()
         self.calc_weights()
         self.calc_cov()
@@ -52,42 +49,35 @@ class Gmm:
         n_pixels = len(self.labels)
         weights = np.zeros(shape=(n_components))
         
-        # Count how many pixels in each component
-        for label in self.labels:
-            weights[label] += 1
+        # Count how many pixels in each component\
+        for i in range(n_components):
+            weights[i] = len(self.labels[self.labels == i])
+
+        assert np.sum(weights) == n_pixels
 
         # Normalize
-        for i, weight in enumerate(weights):
-            weights[i] = weight/n_pixels
+        self.weights = weights / n_pixels
+        assert(1.0 - epsilon <= sum(self.weights) <= 1.0 + epsilon)
 
-        self.weights = np.copy(weights)
-        assert(1.0 - epsilon <= sum(weights) <= 1.0)
-
+    # TODO check this
     def calc_means(self):
-        means = np.zeros(shape=(n_components,3))
-        counts = np.zeros(shape=(n_components))
+        self.means = np.zeros(shape=(n_components,3))
 
-        for i, com in enumerate(self.labels):
-            means[com] += self.pixels[i]
-            counts[com] += 1
-        
-        for i, count in enumerate(counts):
-            if count > 0:
-                means[i] = means[i]/count
-            else:
-                means[i] = 0
-
-        self.means = np.copy(means)
+        for i in range(n_components):
+            temp = self.pixels[np.where(self.labels == i)]
+            self.means[i] = np.sum(temp, axis=0)
+            count = len(temp) if len(temp) > 0 else 1
+            self.means[i] = self.means[i]/count
 
     def calc_cov(self):
         self.cov = np.zeros(shape=(n_components, 3, 3))
 
         for i in range(n_components):
-            pixels = self.pixels[self.labels == i]
+            pixels = self.pixels[np.where(self.labels == i)]
             cov = np.cov(pixels, rowvar=False)
 
             assert(cov.shape == (3,3))
-            np.append(self.cov, np.copy(cov))
+            self.cov[i] = np.copy(cov)
         
         assert(self.cov.shape == (n_components, 3, 3))
 
@@ -98,47 +88,64 @@ class Gmm:
         except LinAlgError:
             self.cov += epsilon * np.eye(self.cov.shape[1])
             self.inv_cov = np.copy(np.linalg.inv(self.cov))
-        return
 
     def calc_det(self):
         self.det = np.linalg.det(self.cov)
 
-    def calc_prob(self, x, k):
-        return multivariate_normal.pdf(x, self.means[k], self.cov[k])
+    def calc_score(self, pixels, component):
+        score = np.zeros(pixels.shape[0])
 
-    def allocate_pixels(self, pixels):
-        # Label each pixel to his most liklyhood component
-        self.labels = np.zeros(shape=(len(pixels)))
-        for i, pixel in enumerate(pixels):
-            argmax_k, max_k = -1, 0
-            for k in range(n_components):
-                prob = self.calc_prob(pixel, k)
-                if prob > max_k:
-                    max_k = prob
-                    argmax_k = k
-            self.labels[i] = argmax_k
+        if self.weights[component] > 0:
+            diff = pixels - self.means[component]
+            # mult = np.einsum('ij,ij->i', diff, np.dot(np.linalg.inv(self.cov[component]), diff.T).T)
+            mult = np.einsum('ij,ij->i', diff, np.dot(self.inv_cov[component], diff.T).T)
+            score = np.exp(-.5 * mult) / np.sqrt(2 * np.pi) / np.sqrt(np.linalg.det(self.cov[component]))
+        return score
+    
+    def calc_prob(self, pixels):
+        prob = [self.calc_score(pixels, component) for component in range(n_components)]
+        return np.dot(self.weights, prob)
+
+    def allocate_pixels(self):
+        prob = np.array([self.calc_score(self.pixels, component) for component in range(n_components)]).T
+        self.labels = np.argmax(prob, axis=1)
 
 class Graph:
     def __init__(self) -> None:
-        self.graph = None
-        self.img = None
-        self.mask = None
+        # igraph
         self.n = 0
         self.bg_id = 0
         self.fg_id = 0
-        self.rows = 0
-        self.culls = 0
         self.beta = 0
-        self.v = {}
-        self.edges = []
-        self.weights = []
+        self.T_weights = []  
+        self.T_edges = []
+        self.N_edges = []
+        self.N_weights = []
         self.max_N_edge = 0
+        self.left_V = None
+        self.upleft_V = None
+        self.up_V = None
+        self.upright_V = None
 
-    def set_graph(self):
+        self.convergence = 0
+
+        # matricies
+        self.img = None
+        self.img_idx = None
+        self.mask = None
+        self.bg_idx = None
+        self.fg_idx = None
+        self.uknown_idx = None
+        self.rows = 0
+        self.cols = 0
+
+    def init_graph(self, img):
+        self.img = np.copy(img)
         x,y = self.img.shape[:2]
+        self.img_idx = np.arange(x*y).reshape((x,y))
         
         self.rows = x
-        self.culls = y
+        self.cols = y
 
         # +2 for bg and fg verticies
         self.n = x*y + 2
@@ -146,20 +153,12 @@ class Graph:
         self.fg_id = self.n - 2
 
         self.calc_beta()
+        self.calc_V()
         self.init_N_edges()
-
-        self.graph = ig.Graph(self.n, self.edges)
-        self.graph.es['weight'] = self.weights
-        self.graph.vs['color'] = np.reshape(self.img, (self.n-2, 3))
-
-    def add_img(self, img):
-        self.img = np.copy(img)
-
-    def add_mask(self, mask):
-        self.mask = np.copy(mask)
+        self.max_N_edge = np.max(self.N_weights)
 
     def calc_beta(self):
-        w = self.culls
+        w = self.cols
         h = self.rows
 
         # this 'catches' all the neighbors distances in img
@@ -175,34 +174,49 @@ class Graph:
         beta = 1 / beta
 
         self.beta = beta
-    
+
+    def calc_V(self):
+        left_diff = self.img[:, 1:] - self.img[:, :-1]
+        upleft_diff = self.img[1:, 1:] - self.img[:-1, :-1]
+        up_diff = self.img[1:, :] - self.img[:-1, :]
+        upright_diff = self.img[1:, :-1] - self.img[:-1, 1:]
+
+        self.left_V = 50 * np.exp(-self.beta * np.sum(np.square(left_diff), axis=2))
+        self.upleft_V = 50 / np.sqrt(2) * np.exp(-self.beta * np.sum(np.square(upleft_diff), axis=2))
+        self.up_V = 50 * np.exp(-self.beta * np.sum(np.square(up_diff), axis=2))
+        self.upright_V = 50 / np.sqrt(2) * np.exp(-self.beta * np.sum(np.square(upright_diff), axis=2))
+
     def add_neighbors_edges(self, x, y):
         n_rows = self.rows
-        n_culls = self.culls
+        n_culls = self.cols
         
         idx = self.index(x, y)
 
-        if y < n_culls - 1:
-            neighbor = self.index(x, y+1)
-            self.edges.append([idx, neighbor])
-            self.weights.append(self.calc_N_weight((x,y), (x,y+1)))
+        # LEFT
+        if y > 0:
+            neighbor = self.index(x, y-1)
+            self.N_edges.append([idx, neighbor])
+            self.N_weights.append(self.calc_N_weight((x,y), (x,y-1)))
 
-        if y < n_culls - 1 and x < n_rows - 1:
-            neighbor = self.index(x+1, y+1)
-            self.edges.append([idx, neighbor])
-            diag = 1/np.sqrt(2)
-            self.weights.append(self.calc_N_weight((x,y), (x+1,y+1)) * diag)
-
-        if x > 0:
-            neighbor = self.index(x-1, y)
-            self.edges.append([idx, neighbor])
-            self.weights.append(self.calc_N_weight((x,y), (x-1,y)))
-
+        # UP-LEFT
         if y > 0 and x > 0:
             neighbor = self.index(x-1, y-1)
-            self.edges.append([idx, neighbor])
+            self.N_edges.append([idx, neighbor])
             diag = 1/np.sqrt(2)
-            self.weights.append(self.calc_N_weight((x,y), (x-1,y-1)) * diag)
+            self.N_weights.append(self.calc_N_weight((x,y), (x-1,y-1)) * diag)
+
+        # UP
+        if x > 0:
+            neighbor = self.index(x-1, y)
+            self.N_edges.append([idx, neighbor])
+            self.N_weights.append(self.calc_N_weight((x,y), (x-1,y)))
+
+        # UP-RIGHT
+        if y < n_culls - 1 and x > 0:
+            neighbor = self.index(x-1, y+1)
+            self.N_edges.append([idx, neighbor])
+            diag = 1/np.sqrt(2)
+            self.N_weights.append(self.calc_N_weight((x,y), (x-1,y+1)) * diag)
 
     def calc_N_weight(self, pixel_1, pixel_2):
         dist = np.sum(np.square(self.img[pixel_1] - self.img[pixel_2]))
@@ -210,66 +224,91 @@ class Graph:
         return weight
 
     def init_N_edges(self):
-        for x,y in product(range(self.rows), range(self.culls)):
-            self.add_neighbors_edges(x,y)
-          
-    def init_T_edges(self, bgGMM=None, fgGMM=None):
-        bg_links = [[self.bg_id, pos] for pos in bgGMM.pos]
-        fg_links = [[self.fg_id, pos] for pos in fgGMM.pos]
+        img_indexes = np.arange(self.rows * self.cols, dtype=np.uint32).reshape(self.rows, self.cols)
+        self.N_edges = []
+        self.N_weights = []
+
+        mask1 = img_indexes[:, 1:].reshape(-1)
+        mask2 = img_indexes[:, :-1].reshape(-1)
+        self.N_edges.extend(list(zip(mask1, mask2)))
+        self.N_weights.extend(self.left_V.reshape(-1).tolist())
+
+        mask1 = img_indexes[1:, 1:].reshape(-1)
+        mask2 = img_indexes[:-1, :-1].reshape(-1)
+        self.N_edges.extend(list(zip(mask1, mask2)))
+        self.N_weights.extend(self.upleft_V.reshape(-1).tolist())
+
+        mask1 = img_indexes[1:, :].reshape(-1)
+        mask2 = img_indexes[:-1, :].reshape(-1)
+        self.N_edges.extend(list(zip(mask1, mask2)))
+        self.N_weights.extend(self.up_V.reshape(-1).tolist())
+
+        mask1 = img_indexes[1:, :-1].reshape(-1)
+        mask2 = img_indexes[:-1, 1:].reshape(-1)
+        self.N_edges.extend(list(zip(mask1, mask2)))
+        self.N_weights.extend(self.upright_V.reshape(-1).tolist())
+
+        assert len(self.N_edges) == len(self.N_weights)
 
     def index(self,x, y) -> int:
-        return x*self.culls + y
+        # return x*self.culls + y
+        return self.img_idx[x,y]
     
-    
-    
+    def update_T_edges(self, mask, bg_gmm: Gmm, fg_gmm: Gmm):
+        self.mask = np.copy(mask)
 
-    # TODO: this
-    def calc_N_weight(self, x, y):
-        beta = 0
+        self.bg_idx = np.where(self.mask.reshape(-1) == GC_BGD)
+        self.fg_idx = np.where(self.mask.reshape(-1) == GC_FGD)
+        self.uknown_idx = np.where(np.logical_or(self.mask.reshape(-1) == GC_PR_FGD, self.mask.reshape(-1) == GC_PR_BGD))
+        
+        self.T_edges = [] 
+        self.T_weights = []
 
-    def init_N_edges(self, n_rows: int, n_cull: int):
-        for idx in range(n_cull * n_rows):
-            if idx % n_rows < n_cull - 1:
-                self.add_N_edge(idx, idx + 1)
-            if idx // n_rows < n_rows - 1:
-                self.add_N_edge(idx, idx + n_cull)
-            if idx % n_rows < n_cull - 1 and idx // n_rows < n_rows - 1:
-                self.add_N_edge(idx, idx + n_cull + 1)
-            if idx % n_rows < n_cull - 1 and 0 < idx // n_rows:
-                self.add_N_edge(idx, idx + n_cull - 1)
-    
-    def calc_T_weight(self, idx, gmm_dis: Gmm):
-        sum = 0
-        for i in range(gmm_dis.weights.size):
-            weight = gmm_dis.weights[i]
-            color = self.vs['color'][idx]
-            det = gmm_dis.det[i]
-            mean = gmm_dis.means[i]
-            inv_cov = gmm_dis.inv_cov[i]
-            sum += weight * (1 / np.sqrt(det)) * \
-                   np.exp(0.5 * (color - mean) * inv_cov * (color - mean))
-        return -np.log(sum)
+        # unknown to foreground vertix
+        self.T_edges.extend(list(zip([self.fg_id] * self.uknown_idx[0].size, self.uknown_idx[0])))
+        with np.errstate(divide='ignore'):
+            score = -np.log(bg_gmm.calc_prob(self.img.reshape(-1, 3)[self.uknown_idx]))
 
-    def add_T_edge(self, x, y, gmm_dis: Gmm, is_bg: bool):
-        if is_bg:
-            weight = 500 # asaf self.max_N_edge
-        else:
-            weight = self.calc_T_weight(x, gmm_dis)
-        self.edges.append([x, y])
-        self.weights.append(weight)
+        assert not np.any(np.isinf(score))
+        # if np.any(np.isinf(score)):
+        #     score[np.isinf(score)] = -np.log(bg_gmm.calc_prob(self.img.reshape(-1, 3)[self.uknown_idx]) + epsilon)[np.isinf(score)]
+        self.T_weights.extend(score.tolist())
+        
+        # unknown to background vertix
+        self.T_edges.extend(list(zip([self.bg_id] * self.uknown_idx[0].size, self.uknown_idx[0])))
+        score = -np.log(fg_gmm.calc_prob(self.img.reshape(-1, 3)[self.uknown_idx]))
+        self.T_weights.extend(score.tolist())
+        
+        # foreground vertix to foreground pixels is biggest
+        self.T_edges.extend(list(zip([self.fg_id] * self.fg_idx[0].size, self.fg_idx[0])))
+        self.T_weights.extend([self.max_N_edge * 10] * self.fg_idx[0].size)
+        
+        # background vertix to foreground pixels is 0
+        self.T_edges.extend(list(zip([self.bg_id] * self.fg_idx[0].size, self.fg_idx[0])))
+        self.T_weights.extend([0] * self.fg_idx[0].size)
+        
+        # foreground vertix to background pixels is 0
+        self.T_edges.extend(list(zip([self.fg_id] * self.bg_idx[0].size, self.bg_idx[0])))
+        self.T_weights.extend([0] * self.bg_idx[0].size)
+        
+        # background vertix to background pixels is biggest
+        self.T_edges.extend(list(zip([self.bg_id] * self.bg_idx[0].size, self.bg_idx[0])))
+        self.T_weights.extend([self.max_N_edge * 10] * self.bg_idx[0].size)
 
-    def init_T_edges(self, bgGMM: Gmm, fgGMM: Gmm):
-        # For TrimapBackground
-        for pos in bgGMM.pos:
-            self.add_T_edge(pos, self.bg_id, bgGMM, True)
+        assert len(self.T_edges) == len(self.T_weights)
 
-        # For TrimapUnknown Dfore and Dback
-        for pos in fgGMM.pos:
-            self.add_T_edge(pos, self.bg_id, fgGMM, False)
-            self.add_T_edge(pos, self.fg_id, bgGMM, False)
+    def min_cut(self, img, mask, bg_gmm, fg_gmm):
+        self.update_T_edges(mask, bg_gmm, fg_gmm)
+        
+        edges = np.concatenate((self.N_edges, self.T_edges))
+        capacities = np.concatenate((self.N_weights, self.T_weights))
 
+        assert len(edges) == 4 * self.cols * self.rows - 3 * (self.cols + self.rows) + 2 + 2 * self.cols * self.rows
 
-    
+        graph = ig.Graph(self.n, edges)
+        mincut = graph.st_mincut(self.fg_id, self.bg_id, capacity=list(capacities))
+
+        return mincut.partition, mincut.value
 
 G = Graph()
 
@@ -285,64 +324,90 @@ def reshape(img, mask):
 
 def seperate(img, mask):
     img_vector, mask_vector = reshape(img, mask)
-    pos_vector = np.arange(img_vector.size)
 
-    bg_pixels = img_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
-    bg_pixels_pos = pos_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
+    bg_pixels = img_vector[mask_vector == GC_BGD]
+    fg_pixels = img_vector[mask_vector > GC_BGD]
+    
+    return bg_pixels, fg_pixels
 
-    fg_pixels = img_vector[(mask_vector == GC_FGD) | (mask_vector == GC_PR_FGD)]
-    fg_pixels_pos = pos_vector[(mask_vector == GC_BGD) | (mask_vector == GC_PR_BGD)]
-    return bg_pixels, fg_pixels, bg_pixels_pos, fg_pixels_pos
-
-def init_graph(img) -> Graph:
-    n_rows, n_cull = img.shape[:2]
-    G.add_img(img)
-    G.init_N_edges(n_rows, n_cull)
-    G.set_graph()
-    return G
+#--------------------------------------------algo by order-------------------------------------------------#
 
 def initalize_GMMs(img, mask):
     bgGMM = None
     fgGMM = None
 
-    bg_pixels, fg_pixels, bg_pixels_pos, fg_pixels_pos = seperate(img, mask)
+    bg_pixels, fg_pixels = seperate(img, mask)
 
-    bgGMM = Gmm(bg_pixels, bg_pixels_pos)
-    fgGMM = Gmm(fg_pixels, fg_pixels_pos)
+    bgGMM = Gmm(bg_pixels)
+    fgGMM = Gmm(fg_pixels)
 
-    init_graph(img)
+    G.init_graph(img)
 
     return bgGMM, fgGMM
 
 def update_GMMs(img, mask, bgGMM: Gmm, fgGMM: Gmm):
-    bg_pixels, fg_pixels, bg_pixels_pos, fg_pixels_pos = seperate(img, mask)
+    x,y,z = img.shape
 
-    bgGMM.update(bg_pixels, bg_pixels_pos)
-    fgGMM.update(fg_pixels, fg_pixels_pos)
+    bg_pixels = img.reshape(x*y, z)[np.logical_or(mask.reshape(-1) == GC_BGD, mask.reshape(-1) == GC_PR_BGD)]
+    fg_pixels = img.reshape(x*y, z)[np.logical_or(mask.reshape(-1) == GC_FGD, mask.reshape(-1) == GC_PR_FGD)]
+
+    bgGMM.update(bg_pixels)
+    fgGMM.update(fg_pixels)
 
     return bgGMM, fgGMM
 
 def calculate_mincut(img, mask, bgGMM, fgGMM):
-    # TODO: implement energy (cost) calculation step and mincut
-    min_cut = [[], []]
-    energy = 0
-    G.init_T_edges(bgGMM, fgGMM)
-    G.set_graph()
-    return min_cut, energy
+    return G.min_cut(img, mask, bgGMM, fgGMM)
+
+# def update_mask(mincut_sets, mask):
+#     x,y = mask.shape
+#     img_idx = np.arange(x*y).reshape((x,y))
+#     new_mask = np.copy(mask)
+#     unknown_idx = np.where(np.logical_or(mask == GC_PR_BGD, mask == GC_PR_FGD))
+#     new_mask[unknown_idx] = np.where(np.isin(img_idx[unknown_idx], mincut_sets[0]), GC_PR_FGD, GC_PR_BGD)
+#     return new_mask
 
 def update_mask(mincut_sets, mask):
-    # TODO: implement mask update step
-    return mask
+    new_mask = np.copy(mask)
+    count = 0
 
+    if (G.fg_id in mincut_sets[0]):
+        fg_set = 0
+    else:
+        fg_set = 1
+    ##check if mincut_set[0] is the nodes of source (source = FG
+
+    for i in mincut_sets[fg_set]:
+        if (i < G.n - 2):
+            row = i // new_mask.shape[1]
+            col = i % new_mask.shape[1]
+            # if the mask pixcel is hard background dont change
+            if (mask[row][col] != GC_BGD and mask[row][col] != GC_PR_FGD):
+                new_mask[row][col] = GC_PR_FGD
+                count += 1
+    
+    for i in mincut_sets[1 - fg_set]:
+        if (i < G.n - 2):
+            row = i // mask.shape[1]
+            col = i % mask.shape[1]
+            if (mask[row][col] != GC_BGD and mask[row][col] != GC_PR_BGD):
+                new_mask[row][col] = GC_PR_BGD
+                count += 1
+    if True:
+        print("in iter ", i, ": changed: ", G.convergence)
+    return new_mask
+
+# TODO !!!!
 def check_convergence(energy):
-    # TODO: implement convergence check
-    convergence = False
-    return convergence
+    return False
 
 def cal_metric(predicted_mask, gt_mask):
-    # TODO: implement metric calculation
+    inter = np.sum(np.logical_and(predicted_mask, gt_mask))
+    union = np.sum(np.logical_or(predicted_mask, gt_mask))
+    accuracy = np.sum(predicted_mask == gt_mask) / gt_mask.size
+    jaccard = inter / union
 
-    return 100, 100
+    return accuracy, jaccard
 
 #-------------------------------------------------main-------------------------------------------------#
 
@@ -362,7 +427,7 @@ def grabcut(img, rect, n_iter=5):
     bgGMM, fgGMM = initalize_GMMs(img, mask)
 
     num_iters = 1000
-    for i in range(num_iters):
+    for i in tqdm(range(1)):
         #Update GMM
         bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
 
@@ -386,26 +451,6 @@ def parse():
     return parser.parse_args()
 
 if __name__ == '__main__':
-    args = parse()
-
-    if args.input_img_path == '':
-        input_path = f'data/imgs/{args.input_name}.jpg'
-    else:
-        input_path = args.input_img_path
-
-    if args.use_file_rect:
-        rect = tuple(map(int, open(f"data/bboxes/{args.input_name}.txt", "r").read().split(' ')))
-    else:
-        rect = tuple(map(int,args.rect.split(',')))
-
-
-    img = cv2.imread(input_path)
-
-    init_graph(img)
-
-
-# if __name__ == '__main__':
-def main():
     # Load an example image and define a bounding box around the object of interest
     args = parse()
 
@@ -418,7 +463,6 @@ def main():
         rect = tuple(map(int, open(f"data/bboxes/{args.input_name}.txt", "r").read().split(' ')))
     else:
         rect = tuple(map(int,args.rect.split(',')))
-
 
     img = cv2.imread(input_path)
 
