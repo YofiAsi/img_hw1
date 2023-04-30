@@ -251,7 +251,7 @@ G = GrabCut()
 
 #--------------------------------------------------------tools----------------------------------------------------------#
 
-def initalize_GMMs(img, mask, n_components=2):
+def initalize_GMMs(img, mask, n_components=5):
 
     G.init_GrabCut(img)
 
@@ -311,7 +311,7 @@ def parse():
 
 #--------------------------------------------------------main----------------------------------------------------------#
 
-def grabcut(img, rect, n_iter=5):
+def grabcut(img, rect, n_components , n_iter=5):
     # Assign initial labels to the pixels based on the bounding box
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask.fill(GC_BGD)
@@ -324,7 +324,7 @@ def grabcut(img, rect, n_iter=5):
     mask[y:y + h, x:x + w] = GC_PR_FGD
     mask[rect[1] + rect[3] // 2, rect[0] + rect[2] // 2] = GC_FGD
     
-    bgGMM, fgGMM = initalize_GMMs(img, mask)
+    bgGMM, fgGMM = initalize_GMMs(img, mask, n_components)
 
     num_iters = 1000
     for i in range(num_iters):
@@ -338,7 +338,7 @@ def grabcut(img, rect, n_iter=5):
             break
 
     # Return the final mask and the GMMs
-    return mask, bgGMM, fgGMM
+    return mask, bgGMM, fgGMM, i+1
 
 def test():
     import os
@@ -400,7 +400,195 @@ def test():
         writer.writeheader()
         writer.writerows(results)
 
+def test_blur():
+    import os
+    import csv
+    import time
+    from tqdm import tqdm
+    input_names = ['flower', 'cross', 'stone2', 'teddy']
+    results = []
+    for input_name in input_names:
+        print(f'working on {input_name}...')
+
+        input_path = f'data/imgs/{input_name}.jpg'
+        rect = tuple(map(int, open(f"data/bboxes/{input_name}.txt", "r").read().split(' ')))
+
+        img = cv2.imread(input_path)
+
+        gt_mask = cv2.imread(f'data/seg_GT/{input_name}.bmp', cv2.IMREAD_GRAYSCALE)
+        gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
+
+        for n_components in tqdm(range(2,6)):
+            img_low = cv2.blur(img, (5,5))
+            img_high = cv2.blur(img, (30,30))
+
+            start = time.time()
+            mask, bgGMM, fgGMM, iter = grabcut(img_low, rect, n_components)
+            end = time.time()
+
+            for i in range(G.n-2):
+                row = i // img.shape[1]
+                col = i % img.shape[1]
+                if (mask[row][col] == GC_PR_BGD):
+                    mask[row][col] = GC_BGD
+
+            mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
+            
+            gt_mask = cv2.imread(f'data/seg_GT/{input_name}.bmp', cv2.IMREAD_GRAYSCALE)
+            gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
+            acc, jac = cal_metric(mask, gt_mask)
+            
+            t = end-start
+            results.append({
+                'name': input_name+"_low_blur",
+                'n components': n_components,
+                'accuracy': acc,
+                'jac': jac,
+                'time': t,
+                'iter': iter,
+            })
+
+            dir = f'test/{input_name}_low_blur/{n_components}_comps'
+            os.makedirs(dir)
+
+            img_cut = img_low * (mask[:, :, np.newaxis])
+            cv2.imwrite(f'{dir}/result.jpg', img_cut)
+            cv2.imwrite(f'{dir}/mask.jpg', mask*255)
+            cv2.imwrite(f'{dir}/gt.jpg', gt_mask*255)
+            cv2.imwrite(f'{dir}/original.jpg', img_low)
+
+            start = time.time()
+            mask, bgGMM, fgGMM, iter = grabcut(img_high, rect, n_components)
+            end = time.time()
+
+            for i in range(G.n-2):
+                row = i // img.shape[1]
+                col = i % img.shape[1]
+                if (mask[row][col] == GC_PR_BGD):
+                    mask[row][col] = GC_BGD
+
+            mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
+            
+            gt_mask = cv2.imread(f'data/seg_GT/{input_name}.bmp', cv2.IMREAD_GRAYSCALE)
+            gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
+            acc, jac = cal_metric(mask, gt_mask)
+            
+            t = end-start
+            results.append({
+                'name': input_name+"_high_blur",
+                'n components': n_components,
+                'accuracy': acc,
+                'jac': jac,
+                'time': t,
+                'iter': iter,
+            })
+
+            dir = f'test/{input_name}_high_blur/{n_components}_comps'
+            os.makedirs(dir)
+
+            img_cut = img_high * (mask[:, :, np.newaxis])
+            cv2.imwrite(f'{dir}/result.jpg', img_cut)
+            cv2.imwrite(f'{dir}/mask.jpg', mask*255)
+            cv2.imwrite(f'{dir}/gt.jpg', gt_mask*255)
+            cv2.imwrite(f'{dir}/original.jpg', img_high)
+
+    with open('results_blur.csv', 'w') as csvfile:
+        writer = csv.DictWriter(csvfile, ['name', 'n components', 'accuracy', 'jac', 'time', 'iter'])
+        writer.writeheader()
+        writer.writerows(results)
+
+def test_rect():
+    import os
+    import csv
+    import time
+    from tqdm import tqdm
+    input_names = ['llama', 'grave']
+    results = []
+    for input_name in input_names:
+        print(f'working on {input_name}...')
+
+        input_path = f'data/imgs/{input_name}.jpg'
+        rect = tuple(map(int, open(f"data/bboxes/{input_name}.txt", "r").read().split(' ')))
+
+        img = cv2.imread(input_path)
+        
+        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+        mask.fill(0)
+        x, y, w, h = rect
+        w -= x
+        h -= y
+        mask[y:y + h, x:x + w] = 1
+        dir = f'test/{input_name}_rec/rec1.jpg'
+        cv2.imwrite(dir, img * (mask[:, :, np.newaxis]))
+
+        if input_name == 'llama':
+            x = 10
+            y = 10
+            w = 500
+            h = 350
+        else:
+            x = 10
+            y = 10
+            w = 430
+            h = 680
+
+        mask.fill(0)
+        mask[y:y + h, x:x + w] = 1
+        dir = f'test/{input_name}_rec/rec2.jpg'
+        cv2.imwrite(dir, img * (mask[:, :, np.newaxis]))
+
+        mask[y:y + h, x:x + w] = GC_PR_FGD
+
+        gt_mask = cv2.imread(f'data/seg_GT/{input_name}.bmp', cv2.IMREAD_GRAYSCALE)
+        gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
+
+        for n_components in tqdm(range(2,6)):
+
+            start = time.time()
+            mask, bgGMM, fgGMM, iter = grabcut(img, rect, n_components)
+            end = time.time()
+
+            for i in range(G.n-2):
+                row = i // img.shape[1]
+                col = i % img.shape[1]
+                if (mask[row][col] == GC_PR_BGD):
+                    mask[row][col] = GC_BGD
+
+            mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
+            
+            gt_mask = cv2.imread(f'data/seg_GT/{input_name}.bmp', cv2.IMREAD_GRAYSCALE)
+            gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
+            acc, jac = cal_metric(mask, gt_mask)
+            
+            t = end-start
+            results.append({
+                'name': input_name+"_new_rec",
+                'n components': n_components,
+                'accuracy': acc,
+                'jac': jac,
+                'time': t,
+                'iter': iter,
+            })
+
+            dir = f'test/{input_name}_rec/{n_components}_comps'
+            os.makedirs(dir)
+
+            img_cut = img * (mask[:, :, np.newaxis])
+            cv2.imwrite(f'{dir}/result.jpg', img_cut)
+            cv2.imwrite(f'{dir}/mask.jpg', mask*255)
+            cv2.imwrite(f'{dir}/gt.jpg', gt_mask*255)
+            cv2.imwrite(f'{dir}/original.jpg', img)
+
+    with open('results_rec.csv', 'w') as csvfile:
+        writer = csv.DictWriter(csvfile, ['name', 'n components', 'accuracy', 'jac', 'time', 'iter'])
+        writer.writeheader()
+        writer.writerows(results)
+
 if __name__ == '__main__':
+    # test_rect()
+    # test_blur()
+    # test()
+
     # Load an example image and define a bounding box around the object of interest
     args = parse()
 
