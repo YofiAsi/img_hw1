@@ -4,7 +4,6 @@ import argparse
 from sklearn.cluster import KMeans
 import igraph as ig
 
-
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
 GC_PR_BGD = 2 # Soft bg pixel
@@ -15,54 +14,72 @@ energy_threshold = 10000
 
 class GMM:
     def __init__(self, pixels_array, n_components=5):
-        self.labels = KMeans(n_clusters=self.n_components, n_init=1).fit(pixels_array).labels_
+        kmeans = KMeans(n_clusters=n_components, n_init=1).fit(pixels_array)
+        self.labels = kmeans.labels_
+        self.means = kmeans.cluster_centers_
         self.n_components = n_components
+
         self.dim = pixels_array.shape[1]
-        self.counter = np.zeros(self.n_components)
+        self.pixels = pixels_array
+        self.counter = None
+        self.weights = None
+        self.covs = None
 
-        self.weights = np.zeros(self.n_components)
-        self.means = np.zeros((self.n_components, self.dim))
+        self.calc_counter()
+        self.calc_weights()
+        self.calc_covs()
+
+    def update_gmm(self, pixels_array):
+        self.pixels = np.copy(pixels_array)
+        self.allocate_pixels()
+        self.calc_means()
+        self.calc_weights()
+        self.calc_covs()
+    
+    def allocate_pixels(self):
+        prob = np.array([self.calc_score(self.pixels, component) for component in range(self.n_components)]).T
+        self.labels = np.argmax(prob, axis=1)
+    
+    def calc_counter(self):
+        uni_labels, count = np.unique(self.labels, return_counts=True)
         
-        self.covs = np.zeros(
-            (self.n_components, self.dim, self.dim))
-
-        self.fit(pixels_array, self.labels)
-
-    def fit(self, X, labels):
-        self.counter[:] = 0
-        self.weights[:] = 0
-        uni_labels, count = np.unique(labels, return_counts=True)
+        self.counter = np.zeros(self.n_components)
         self.counter[uni_labels] = count
+    
+    def calc_means(self):
+        self.means = np.zeros(shape=(self.n_components, self.dim))
+        for component in range(self.n_components):
+            self.means[component] = np.mean(self.pixels[self.labels == component], axis=0)
 
-        for component in uni_labels:
-            n = self.counter[component]
+    def calc_weights(self):
+        self.weights = np.zeros(self.n_components)
+        s = np.sum(self.counter)
 
-            self.weights[component] = n / np.sum(self.counter)
-            self.means[component] = np.mean(X[component == labels], axis=0)
-            self.covs[component] = 0 if self.counter[component] <= 1 else np.cov(
-                X[component == labels].T)
+        for component in range(self.n_components):
+            self.weights[component] = self.counter[component] / s
 
+    def calc_covs(self):
+        self.covs = np.zeros(shape=(self.n_components, self.dim, self.dim))
+
+        for component in range(self.n_components):
+            self.covs[component] = 0 if self.counter[component] <= 1 else np.cov(self.pixels[self.labels == component].T)
+
+            # making sure the inv will be ok
             det = np.linalg.det(self.covs[component])
             if det <= 0:
-                # Adds the white noise to avoid singular covariance matrix.
                 self.covs[component] += np.eye(self.dim) * epsilon
-                det = np.linalg.det(self.covs[component])
 
-    def calc_score(self, X, component):
-        score = np.zeros(X.shape[0])
+    def calc_score(self, pixels, component):
+        score = np.zeros(pixels.shape[0])
         if self.weights[component] > 0:
-            diff = X - self.means[component]
+            diff = pixels - self.means[component]
             mult = np.einsum('ij,ij->i', diff, np.dot(np.linalg.inv(self.covs[component]), diff.T).T)
             score = np.exp(-.5 * mult) / np.sqrt(2 * np.pi) / np.sqrt(np.linalg.det(self.covs[component]))
         return score
 
-    def calc_prob(self, X):
-        prob = [self.calc_score(X, component) for component in range(self.n_components)]
+    def calc_prob(self, pixels):
+        prob = [self.calc_score(pixels, component) for component in range(self.n_components)]
         return np.dot(self.weights, prob)
-    
-    def which_component(self, X):
-        prob = np.array([self.calc_score(X, component) for component in range(self.n_components)]).T
-        return np.argmax(prob, axis=1)
 
 class GrabCut:
     def __init__(self) -> None:
@@ -234,7 +251,7 @@ G = GrabCut()
 
 #--------------------------------------------------------tools----------------------------------------------------------#
 
-def initalize_GMMs(img, mask, n_components=5):
+def initalize_GMMs(img, mask, n_components=2):
 
     G.init_GrabCut(img)
 
@@ -247,15 +264,11 @@ def initalize_GMMs(img, mask, n_components=5):
     return bgGMM, fgGMM
 
 def update_GMMs(img, mask, bgGMM: GMM, fgGMM: GMM):
-    comp_idxs = np.empty(img.shape[:2], dtype=np.uint32)
     bg_pixels = np.where(np.logical_or(mask == GC_BGD, mask == GC_PR_BGD))
     fg_pixels = np.where(np.logical_or(mask == GC_FGD, mask == GC_PR_FGD))
 
-    comp_idxs[bg_pixels] = bgGMM.which_component(img[bg_pixels])     
-    comp_idxs[fg_pixels] = fgGMM.which_component(img[fg_pixels])
-
-    bgGMM.fit(img[bg_pixels],comp_idxs[bg_pixels])
-    fgGMM.fit(img[fg_pixels],comp_idxs[fg_pixels])
+    bgGMM.update_gmm(img[bg_pixels])
+    fgGMM.update_gmm(img[fg_pixels])
 
     return bgGMM, fgGMM
 
@@ -298,7 +311,7 @@ def parse():
 
 #--------------------------------------------------------main----------------------------------------------------------#
 
-def grabcut(img, rect, n_components=5, n_iter=5):
+def grabcut(img, rect, n_iter=5):
     # Assign initial labels to the pixels based on the bounding box
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask.fill(GC_BGD)
@@ -311,7 +324,7 @@ def grabcut(img, rect, n_components=5, n_iter=5):
     mask[y:y + h, x:x + w] = GC_PR_FGD
     mask[rect[1] + rect[3] // 2, rect[0] + rect[2] // 2] = GC_FGD
     
-    bgGMM, fgGMM = initalize_GMMs(img, mask, n_components)
+    bgGMM, fgGMM = initalize_GMMs(img, mask)
 
     num_iters = 1000
     for i in range(num_iters):
@@ -325,7 +338,7 @@ def grabcut(img, rect, n_components=5, n_iter=5):
             break
 
     # Return the final mask and the GMMs
-    return mask, bgGMM, fgGMM, i
+    return mask, bgGMM, fgGMM
 
 def test():
     import os
