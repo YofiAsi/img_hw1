@@ -311,7 +311,7 @@ def parse():
 
 #--------------------------------------------------------main----------------------------------------------------------#
 
-def grabcut(img, rect, n_components , n_iter=5):
+def grabcut(img, rect, n_components=5, n_iter=5):
     # Assign initial labels to the pixels based on the bounding box
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask.fill(GC_BGD)
@@ -338,9 +338,9 @@ def grabcut(img, rect, n_components , n_iter=5):
             break
 
     # Return the final mask and the GMMs
-    return mask, bgGMM, fgGMM, i+1
+    return mask, bgGMM, fgGMM
 
-def test():
+"""def test():
     import os
     import csv
     import time
@@ -582,7 +582,7 @@ def test_rect():
     with open('results_rec.csv', 'w') as csvfile:
         writer = csv.DictWriter(csvfile, ['name', 'n components', 'accuracy', 'jac', 'time', 'iter'])
         writer.writeheader()
-        writer.writerows(results)
+        writer.writerows(results)"""
 
 if __name__ == '__main__':
     # test_rect()
